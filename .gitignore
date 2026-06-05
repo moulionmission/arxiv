@@ -1,0 +1,34 @@
+
+# Data files
+data/raw/*.csv
+data/processed/*.csv
+
+# Model checkpoints
+models/
+
+# Environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.pyc
+__pycache__/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+*.txt~
+
+# Results
+results/
+output/
