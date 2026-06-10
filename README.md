@@ -1,6 +1,6 @@
-# arXiv Scientific Paper Classification
+# arXiv Paper Classifier
 
-**Research-grade NLP pipeline for classifying arXiv papers into major research categories.**
+**An NLP pipeline that classifies arXiv abstracts into five research areas using transformer models, with an interactive Streamlit dashboard.**
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.1-red)
@@ -9,118 +9,77 @@
 
 ---
 
-## 🎯 Project Overview
+## Overview
 
-This project implements a research-grade NLP system that:
+Given the title and abstract of an arXiv paper, this system predicts which of five
+computer-science research areas it belongs to:
 
-1. **Classifies research papers** into 5 major categories:
-   - AI (Artificial Intelligence)
-   - ML (Machine Learning)
-   - NLP (Natural Language Processing)
-   - Computer Vision
-   - Robotics
+- **AI** — Artificial Intelligence (`cs.AI`)
+- **ML** — Machine Learning (`cs.LG`)
+- **NLP** — Natural Language Processing (`cs.CL`)
+- **Computer Vision** (`cs.CV`)
+- **Robotics** (`cs.RO`)
 
-2. **Analyzes research trends** across categories:
-   - Topic evolution over time
-   - Citation velocity and patterns
-   - Research growth rates
+The project covers the full loop: pulling real data from the arXiv API, cleaning and
+de-duplicating abstracts, fine-tuning a transformer classifier, evaluating it with
+macro F1, and serving predictions through a Streamlit app.
 
-3. **Compares BERT variants** for deployment:
-   - BERT-base (110M params, ~92% F1)
-   - RoBERTa-base (125M params, ~93% F1) ← Recommended
-   - DistilBERT (66M params, ~89% F1)
-
-4. **Provides interactive deployment** via Streamlit dashboard
+These categories overlap heavily in practice — a paper on *"transformers for medical
+image segmentation"* has a legitimate claim to ML, CV, and NLP at once — so the
+interesting engineering problem here is less about squeezing out accuracy and more
+about measuring performance honestly under genuinely ambiguous labels.
 
 ---
 
-## 📊 Dataset
+## Dataset
 
-- **Source**: arXiv API (free, 30-day lag)
-- **Size**: ~100,000 papers (2023-2025)
-- **Categories**: 5-way balanced classification
-- **Features**: Title, abstract, authors, submission date, category
+- **Source:** arXiv API (`export.arxiv.org`) — free, public, ~30-day indexing lag
+- **Raw pull:** 2,000 most-recent papers per category × 5 categories ≈ **10,000 papers**
+- **After cleaning/de-duplication:** **8,019 papers** used for training and evaluation
+- **Date range:** submissions from 2004–2024
+- **Fields used:** title, abstract, submission date, category label
 
-**Class Distribution**:
-```
-ML              : 20,000 papers
-NLP             : 18,500 papers
-Computer Vision : 19,200 papers
-AI              : 21,500 papers
-Robotics        : 20,800 papers
-```
+Cleaning steps (`data_loader.py`): strip URLs and LaTeX artifacts, normalize
+whitespace, drop duplicates, and remove very short abstracts.
+
+> **Note on reproducibility:** because the API returns the *most recent* papers at
+> fetch time, re-running the fetch later produces a different snapshot. The fetch and
+> preprocessing scripts are deterministic given a fixed CSV; the data download is not.
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
-### 1. Setup Environment
+### 1. Setup
 
 ```bash
-# Create virtual environment
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# or
-venv\Scripts\activate      # Windows
-
-# Install dependencies
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Fetch and Prepare Data
+### 2. Fetch data from arXiv (~90 min, network-bound)
 
 ```bash
-# Option A: Fetch fresh data from arXiv (1-2 hours)
-python -c "
-from data_loader import ArxivDataLoader
-loader = ArxivDataLoader()
-df = loader.fetch_all_categories(papers_per_category=20000)
-loader.save_to_csv('data/raw/arxiv_papers.csv')
-"
-
-# Option B: Use sample dataset (available separately)
-# Download from: [link to sample data]
+python fetch_10k_full.py
+# Pulls 2,000 papers per category -> data/raw/arxiv_10k_papers.csv
 ```
 
-### 3. Preprocess Data
+### 3. Preprocess
 
 ```bash
-python -c "
-import pandas as pd
-from data_loader import TextPreprocessor
-
-df = pd.read_csv('data/raw/arxiv_papers.csv')
-preprocessor = TextPreprocessor()
-df = preprocessor.prepare_dataset(df, 'data/processed/arxiv_papers_cleaned.csv')
-"
+python preprocess_8k.py
+# Cleans + de-duplicates -> data/processed/arxiv_8k_cleaned.csv
 ```
 
-### 4. Train Models
+### 4. Train
 
 ```bash
-python bert_model.py
-# Trains BERT-base, RoBERTa, and DistilBERT
-# Models saved to: models/
-# Results saved to: results/
+python train_8k.py
+# Fine-tunes RoBERTa-base on the 8,019-paper set
 ```
 
-**Training Time** (with NVIDIA GPU):
-- BERT-base: ~4 hours
-- RoBERTa-base: ~4.5 hours
-- DistilBERT: ~2 hours
-
-### 5. Run Statistical Analysis
-
-```bash
-python statistical_analysis.py
-# Generates:
-# - Topic evolution trends
-# - Mann-Kendall significance tests
-# - Citation velocity analysis
-# - Visualizations saved to results/
-```
-
-### 6. Launch Streamlit Dashboard
+### 5. Launch the dashboard
 
 ```bash
 streamlit run streamlit_app.py
@@ -129,160 +88,107 @@ streamlit run streamlit_app.py
 
 ---
 
-## 📁 Project Structure
+## Model & Training
 
+The core trainer (`bert_model.py`) wraps a Hugging Face
+`AutoModelForSequenceClassification` head on a configurable backbone.
+
+| Setting | Value |
+|---|---|
+| Backbone | `roberta-base` (RoBERTa) |
+| Split | Stratified 70 / 15 / 15 train / val / test |
+| Optimizer | AdamW, learning rate `2e-5` |
+| Batch size | 16 (train) |
+| Epochs | up to 10, with best-checkpoint selection on validation macro F1 |
+| Seeds | `numpy` and `torch` fixed at 42 |
+| Primary metric | **Macro F1** |
+
+**Why macro F1 and not accuracy:** macro F1 weights every class equally, so a model
+can't coast on the larger categories while quietly failing on a smaller one. With
+overlapping research areas, it's the metric that tells you the truth about per-class
+behavior.
+
+### Lightweight variant
+
+`train_10yr_10k.py` runs a deliberately cheaper configuration: **DistilBERT used as a
+frozen feature extractor on CPU**, with `max_length=128`. This trades some accuracy for
+a setup that trains without a GPU — useful for quick iteration or reproducing the
+pipeline on a laptop.
+
+---
+
+## Results
+
+> Replace the values below with the actual numbers printed by `train_8k.py` on your
+> run. (The classifier reports macro F1 and a full `classification_report` on the held-out
+> test set.) Until you commit a real results file, keep this section honest about what
+> you measured rather than listing aspirational numbers.
+
+| Model | Setup | Macro F1 (test) |
+|---|---|---|
+| RoBERTa-base | fine-tuned, 8,019 papers | _your measured value (~0.80)_ |
+| DistilBERT | frozen features, CPU | _your measured value_ |
+
+Per-class behavior (precision / recall / F1) comes from the printed
+`classification_report`. The most useful output isn't the headline number — it's the
+**confusion matrix**, because the pairs the model mixes up (e.g. AI ↔ ML, ML ↔ CV) tend
+to reflect real overlap between these research areas rather than model error.
+
+To regenerate results:
+
+```bash
+python train_8k.py        # prints macro F1 + classification_report on the test set
 ```
-arxiv-paper-classification/
-├── data/
-│   ├── raw/                    # Raw arXiv papers
-│   └── processed/              # Cleaned, tokenized data
-├── models/
-│   ├── bert-base-uncased_best.pt
-│   ├── roberta-base_best.pt
-│   └── distilbert-base-uncased_best.pt
-├── results/
-│   ├── confusion_matrix_*.png
-│   ├── topic_evolution.png
-│   ├── citation_distribution.png
-│   └── *_results.json
-├── data_loader.py              # arXiv API + preprocessing
-├── bert_model.py               # Model training pipeline
-├── statistical_analysis.py     # Trend analysis
-├── streamlit_app.py            # Interactive dashboard
-├── requirements.txt
-└── README.md
-```
 
 ---
 
-## 🏋️ Model Performance
+## Inference
 
-### Overall Results
-
-| Model | Macro F1 | Weighted F1 | Accuracy | Inference Time |
-|-------|----------|------------|----------|-----------------|
-| **BERT-base** | 0.920 | 0.923 | 92.3% | ~200ms |
-| **RoBERTa-base** | **0.935** | **0.937** | **93.7%** | ~210ms |
-| **DistilBERT** | 0.891 | 0.893 | 89.3% | ~80ms |
-
-### Per-Category F1 Scores (Best Model: RoBERTa)
-
-| Category | Precision | Recall | F1 Score |
-|----------|-----------|--------|----------|
-| AI | 0.94 | 0.93 | 0.935 |
-| ML | 0.96 | 0.95 | 0.955 |
-| NLP | 0.92 | 0.90 | 0.910 |
-| Computer Vision | 0.91 | 0.89 | 0.900 |
-| Robotics | 0.88 | 0.85 | 0.865 |
-
----
-
-## 📈 Research Insights
-
-### Topic Trends (Mann-Kendall Test)
-
-| Category | Trend | P-Value | Interpretation |
-|----------|-------|---------|-----------------|
-| NLP | ↑ Increasing | <0.001 | Highly significant growth |
-| ML | ↑ Increasing | <0.001 | Highly significant growth |
-| Computer Vision | ↑ Increasing | <0.01 | Significant growth |
-| AI | → Stable | 0.08 | Slight growth, not significant |
-| Robotics | → Stable | 0.15 | No significant trend |
-
-### Growth Rates (Year-over-Year)
-
-- **NLP**: +28.5% (fastest growing)
-- **ML**: +21.3%
-- **Computer Vision**: +18.7%
-- **AI**: +15.2%
-- **Robotics**: +9.8%
-
-### Citation Velocity
-
-NLP and ML papers are cited faster than other categories:
-- **NLP**: 2.3 citations/100 days
-- **ML**: 2.1 citations/100 days
-- **Computer Vision**: 1.8 citations/100 days
-
----
-
-## 🔧 Key Features
-
-### 1. Real-time Classification
 ```python
 from bert_model import BertClassifier
 
-classifier = BertClassifier(model_name='roberta-base')
-classifier.load_model('models/roberta-base_best.pt')
+clf = BertClassifier(model_name='roberta-base')
+clf.load_model('models/roberta-base_best.pt')
 
-result = classifier.predict("Your abstract text here...")
-print(result)
-# Output:
-# {
-#   'predicted_label': 'NLP',
-#   'confidence': 0.94,
-#   'all_scores': {
-#     'AI': 0.02,
-#     'ML': 0.03,
-#     'NLP': 0.94,
-#     'Computer Vision': 0.01,
-#     'Robotics': 0.00
-#   }
-# }
-```
-
-### 2. Topic Evolution Analysis
-```python
-from statistical_analysis import TopicEvolutionAnalysis
-
-analysis = TopicEvolutionAnalysis(df)
-mk_results = analysis.mann_kendall_test('year')
-analysis.plot_topic_trends(granularity='quarter')
-```
-
-### 3. Citation Analysis
-```python
-from statistical_analysis import CitationTrendAnalysis
-
-citation_analysis = CitationTrendAnalysis(df)
-stats = citation_analysis.citation_stats_by_category()
-velocity = citation_analysis.citation_velocity_trend()
+result = clf.predict("We present a transformer-based approach to ...")
+# {'predicted_label': 'NLP', 'confidence': 0.94, 'all_scores': {...}}
 ```
 
 ---
 
-## 🌐 Deployment
+## Project Structure
 
-### Deploy to Streamlit Cloud
-
-1. **Push to GitHub**:
-```bash
-git init
-git add .
-git commit -m "Initial commit: arXiv paper classifier"
-git push -u origin main
+```
+arxiv-main/
+├── data_loader.py            # arXiv API fetch + text cleaning
+├── fetch_10k_full.py         # pulls 2,000 papers/category from arXiv
+├── preprocess_8k.py          # cleaning -> 8,019-paper dataset
+├── bert_model.py             # BertClassifier: training/eval/inference
+├── train_8k.py               # fine-tune RoBERTa on the 8k set
+├── train_10yr_10k.py         # frozen-DistilBERT (CPU) variant
+├── statistical_analysis.py   # dataset/label distribution analysis
+├── keyword_analyzer.py       # keyword-based category signals
+├── streamlit_app.py          # interactive dashboard
+├── tests/                    # (in progress)
+└── requirements.txt
 ```
 
-2. **Connect to Streamlit Cloud**:
-   - Go to https://share.streamlit.io
-   - Select your GitHub repo
-   - Choose `streamlit_app.py` as main file
-   - Click Deploy
+---
 
-3. **Access Dashboard**:
-   - Share URL: `https://share.streamlit.io/[username]/arxiv-classifier`
+## Deployment
 
-### Local Docker Deployment
+### Streamlit Cloud
+Push to GitHub, connect the repo at <https://share.streamlit.io>, and select
+`streamlit_app.py` as the entry point.
+
+### Docker
 
 ```dockerfile
 FROM python:3.10-slim
-
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
-
 COPY . .
-
 EXPOSE 8501
 CMD ["streamlit", "run", "streamlit_app.py"]
 ```
@@ -294,133 +200,39 @@ docker run -p 8501:8501 arxiv-classifier
 
 ---
 
-## 📚 Reproducibility
+## Limitations & Honest Notes
 
-All results are fully reproducible:
-
-- **Random Seeds**: Fixed in all modules (numpy, torch)
-- **Stratified Splits**: Ensures class balance in train/val/test
-- **Model Weights**: Pre-trained checkpoints saved
-- **Analysis Notebooks**: Full pipeline with outputs
-
-**To reproduce**:
-```bash
-python -m pytest tests/  # Run reproducibility tests
-```
+- **Snapshot data.** Trained on ~8K recent abstracts; arXiv categories drift over time,
+  so a model trained today won't perfectly fit papers from a different period.
+- **Overlapping labels.** Many papers legitimately belong to several of these five
+  categories; single-label accuracy has a real ceiling here.
+- **No external validation set.** Evaluation is a held-out split of the same snapshot,
+  not a separate independent corpus.
+- **Title + abstract only.** No full text, citations, or author/venue signals are used.
 
 ---
 
-## 🔬 Research Methodology
+## Roadmap
 
-### 1. Data Preparation
-- Fetch 100K papers from arXiv API
-- Clean abstracts (remove URLs, normalize whitespace)
-- Remove duplicates and short abstracts (<20 words)
-- Stratified 70/15/15 train/val/test split
-
-### 2. Model Training
-- Use pre-trained BERT-family models
-- Fine-tune on classification task
-- Learning rate: 2e-5 (standard for transfer learning)
-- Batch size: 16 (gradient accumulation if needed)
-- Early stopping on validation F1
-
-### 3. Evaluation
-- **Primary Metric**: Macro F1 (handles class imbalance)
-- **Secondary Metrics**: Per-class precision/recall
-- **Significance Testing**: Mann-Kendall for trends, ANOVA for citations
-
-### 4. Statistical Analysis
-- **Trend Testing**: Mann-Kendall non-parametric test
-- **Diversity Metrics**: Shannon entropy
-- **Growth Analysis**: Year-over-year growth rates
+- [ ] Commit a reproducible `results.json` from a real training run
+- [ ] Add unit tests for the preprocessing and inference paths
+- [ ] Multi-label classification (let a paper belong to more than one area)
+- [ ] Confidence calibration and an "uncertain" abstain option
+- [ ] Lightweight API endpoint for programmatic classification
 
 ---
 
-## 📝 Citation
+## Tech Stack
 
-If you use this project in research, please cite:
+PyTorch · Hugging Face Transformers (RoBERTa / DistilBERT) · scikit-learn · pandas ·
+Streamlit · Docker
 
-```bibtex
-@misc{arxiv_classifier_2025,
-  title={arXiv Scientific Paper Classification: A Research-Grade NLP Pipeline},
-  author={Dasari, Chandra Mouli},
-  year={2025},
-  publisher={GitHub},
-  howpublished={\url{https://github.com/moulionmission/arxiv-classifier}}
-}
-```
+## License
 
----
+MIT — see `LICENSE`.
 
-## 🤝 Contributing
+## Contact
 
-Contributions welcome! Please:
-
-1. Fork the repository
-2. Create feature branch (`git checkout -b feature/improvement`)
-3. Commit changes (`git commit -m "Add improvement"`)
-4. Push to branch (`git push origin feature/improvement`)
-5. Open Pull Request
-
----
-
-## 📄 License
-
-MIT License - see LICENSE file for details
-
----
-
-## 🙏 Acknowledgments
-
-- **arXiv** for public paper dataset
-- **Hugging Face** for transformer models and tokenizers
-- **PyTorch** and **TensorFlow** teams
-- **Streamlit** for interactive visualization platform
-
----
-
-## 📧 Contact & Support
-
-For questions or issues:
-
-- **GitHub Issues**: [Report bugs](https://github.com/moulionmission/arxiv-classifier/issues)
-- **Email**: [your-email@example.com]
-- **LinkedIn**: [Your LinkedIn Profile]
-
----
-
-## 🗺️ Roadmap
-
-- [ ] Add citation data from Semantic Scholar API
-- [ ] Implement SHAP-based model interpretability
-- [ ] Deploy to production (Kubernetes)
-- [ ] Add active learning for user feedback
-- [ ] Extend to 15+ research categories
-- [ ] Create API endpoint for paper classification
-- [ ] Add paper recommendation system
-- [ ] Support for non-English papers
-
----
-
-## 📚 Resources
-
-### Papers & References
-- [BERT: Pre-training of Deep Bidirectional Transformers](https://arxiv.org/abs/1810.04805)
-- [RoBERTa: A Robustly Optimized BERT Pretraining Approach](https://arxiv.org/abs/1907.11692)
-- [DistilBERT: A Distilled Version of BERT](https://arxiv.org/abs/1910.01108)
-
-### Tutorials
-- [HuggingFace Transformers Documentation](https://huggingface.co/docs/transformers/)
-- [PyTorch Lightning Training Guide](https://pytorch-lightning.readthedocs.io/)
-- [Streamlit Documentation](https://docs.streamlit.io/)
-
-### Datasets
-- [arXiv Dataset](https://arxiv.org/help/api)
-- [Semantic Scholar Open Research Corpus](https://www.semanticscholar.org/corpus)
-
----
-
-**Last Updated**: December 2025  
-**Status**: Active Development 🚀
-
+- **GitHub:** [moulionmission](https://github.com/moulionmission)
+- **Email:** _your email_
+- **LinkedIn:** _your profile_
