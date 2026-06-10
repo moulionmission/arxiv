@@ -234,5 +234,5 @@ MIT — see `LICENSE`.
 ## Contact
 
 - **GitHub:** [moulionmission](https://github.com/moulionmission)
-- **Email:** _your email_
-- **LinkedIn:** _your profile_
+- **Email:** CHANDRAMOULIDASARI616@GMAIL.COM
+- **LinkedIn:** https://www.linkedin.com/in/chandramoulidasari17/?isSelfProfile=true
